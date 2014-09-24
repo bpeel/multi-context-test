@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "shader-data.h"
 
@@ -457,6 +458,8 @@ main(int argc, char **argv)
 {
         struct mct_context_state context_states[N_WINDOWS];
         Display *display;
+        int frame_count = 0;
+        time_t last_time = 0, now;
         int i;
 
         display = XOpenDisplay(NULL);
@@ -472,6 +475,15 @@ main(int argc, char **argv)
 
                 while (true) {
                         draw_contexts(context_states);
+
+                        frame_count++;
+
+                        time(&now);
+                        if (now != last_time) {
+                                printf("FPS = %i\n", frame_count);
+                                last_time = now;
+                                frame_count = 0;
+                        }
                 }
                 destroy_contexts(context_states, N_WINDOWS);
         }
