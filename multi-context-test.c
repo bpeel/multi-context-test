@@ -42,6 +42,8 @@
 #define GRID_WIDTH 100
 #define GRID_HEIGHT 100
 
+#define N_WINDOWS 3
+
 struct mct_window {
         Display *display;
         Window win;
@@ -56,6 +58,11 @@ struct mct_draw_state {
         GLuint prog;
 
         GLuint band_pos_location;
+};
+
+struct mct_context_state {
+        struct mct_window *window;
+        struct mct_draw_state *draw_state;
 };
 
 struct mct_vertex {
@@ -371,27 +378,86 @@ mct_draw_state_free(struct mct_draw_state *draw_state)
 }
 
 static void
-draw_all(struct mct_draw_state *draw_state)
+destroy_contexts(struct mct_context_state *context_states,
+                 int n_contexts)
 {
-        int x, y;
+        int i;
 
-        mct_draw_state_start(draw_state);
+        for (i = n_contexts - 1; i >= 0; i--) {
+                mct_window_make_current(context_states[i].window);
+                mct_draw_state_free(context_states[i].draw_state);
+                mct_window_free(context_states[i].window);
+        }
+}
 
-        for (y = 0; y < GRID_HEIGHT; y++) {
-                for (x = 0; x < GRID_WIDTH; x++) {
-                        mct_draw_state_draw_rectangle(draw_state, x, y);
+static bool
+init_contexts(Display *display,
+              struct mct_context_state *context_states)
+{
+        int i;
+
+        for (i = 0; i < N_WINDOWS; i++) {
+                context_states[i].window = mct_window_new(display, 640, 640);
+
+                if (context_states[i].window == NULL)
+                        goto error;
+
+                mct_window_make_current(context_states[i].window);
+
+                context_states[i].draw_state = mct_draw_state_new();
+
+                if (context_states[i].draw_state == NULL) {
+                        mct_window_free(context_states[i].window);
+                        goto error;
                 }
         }
 
-        mct_draw_state_end(draw_state);
+        return true;
+
+error:
+        destroy_contexts(context_states, i);
+        return false;
+}
+
+static void
+draw_context_window(struct mct_context_state *context_state,
+                    int x, int y)
+{
+        mct_window_make_current(context_state->window);
+        mct_draw_state_draw_rectangle(context_state->draw_state, x, y);
+}
+
+static void
+draw_contexts(struct mct_context_state *context_states)
+{
+        int i, x, y;
+
+        for (i = 0; i < N_WINDOWS; i++) {
+                mct_window_make_current(context_states[i].window);
+                mct_draw_state_start(context_states[i].draw_state);
+        }
+
+        for (y = 0; y < GRID_HEIGHT; y++) {
+                for (x = 0; x < GRID_HEIGHT; x++) {
+                        for (i = 0; i < N_WINDOWS; i++) {
+                                draw_context_window(context_states + i, x, y);
+                        }
+                }
+        }
+
+        for (i = 0; i < N_WINDOWS; i++) {
+                mct_window_make_current(context_states[i].window);
+                mct_draw_state_end(context_states[i].draw_state);
+                mct_window_swap(context_states[i].window);
+        }
 }
 
 int
 main(int argc, char **argv)
 {
-        struct mct_window *window;
-        struct mct_draw_state *draw_state;
+        struct mct_context_state context_states[N_WINDOWS];
         Display *display;
+        int i;
 
         display = XOpenDisplay(NULL);
 
@@ -400,25 +466,14 @@ main(int argc, char **argv)
                 return EXIT_FAILURE;
         }
 
-        window = mct_window_new(display, 640, 640);
+        if (init_contexts(display, context_states)) {
+                for (i = 0; i < N_WINDOWS; i++)
+                        XMapWindow(display, context_states[i].window->win);
 
-        if (window) {
-                mct_window_make_current(window);
-
-                draw_state = mct_draw_state_new();
-
-                XMapWindow(display, window->win);
-
-                if (draw_state) {
-                        while (true) {
-                                draw_all(draw_state);
-                                mct_window_swap(window);
-                        }
-
-                        mct_draw_state_free(draw_state);
+                while (true) {
+                        draw_contexts(context_states);
                 }
-
-                mct_window_free(window);
+                destroy_contexts(context_states, N_WINDOWS);
         }
 
         XCloseDisplay(display);
