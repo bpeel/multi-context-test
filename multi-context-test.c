@@ -45,6 +45,23 @@
 
 #define N_WINDOWS 3
 
+#ifndef GL_CONTEXT_RELEASE_BEHAVIOR
+#define GL_CONTEXT_RELEASE_BEHAVIOR       0x82FB
+#endif
+#ifndef GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH
+#define GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH 0x82FC
+#endif
+
+#ifndef GLX_CONTEXT_RELEASE_BEHAVIOR_ARB
+#define GLX_CONTEXT_RELEASE_BEHAVIOR_ARB  0x2097
+#endif
+#ifndef GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB
+#define GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB 0
+#endif
+#ifndef GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB
+#define GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB 0x2098
+#endif
+
 struct mct_window {
         Display *display;
         Window win;
@@ -139,15 +156,19 @@ mct_window_swap(struct mct_window *window)
 }
 
 static struct mct_window *
-mct_window_new(Display *display, int width, int height)
+mct_window_new(Display *display,
+               int width, int height,
+               bool flush_on_release)
 {
-        static const int context_attribs[] = {
+        int context_attribs[] = {
                 GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
                 GLX_CONTEXT_MINOR_VERSION_ARB, 3,
                 GLX_CONTEXT_PROFILE_MASK_ARB,
                 GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
                 GLX_CONTEXT_FLAGS_ARB,
                 GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
+                GLX_CONTEXT_RELEASE_BEHAVIOR_ARB,
+                GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB,
                 None
         };
         GLXFBConfig fb_config;
@@ -159,10 +180,31 @@ mct_window_new(Display *display, int width, int height)
         XVisualInfo *visinfo;
         struct mct_window *window;
         PFNGLXCREATECONTEXTATTRIBSARBPROC create_context_attribs;
+        bool has_flush_ext;
 
         if (!check_glx_extension(display, "GLX_ARB_create_context")) {
                 fprintf(stderr,
                         "GLX_ARB_create_context is not supported\n");
+                return NULL;
+        }
+
+        has_flush_ext = check_glx_extension(display,
+                                            "GLX_ARB_context_flush_control");
+
+        if (flush_on_release) {
+                if (has_flush_ext) {
+                        context_attribs[sizeof context_attribs /
+                                        sizeof context_attribs[0] - 2] =
+                                GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB;
+                } else {
+                        context_attribs[sizeof context_attribs /
+                                        sizeof context_attribs[0] - 3] = None;
+                }
+        } else if (!has_flush_ext) {
+                fprintf(stderr,
+                        "Requested disabling flush on release but "
+                        "GLX_ARB_context_flush_control is not "
+                        "available\n");
                 return NULL;
         }
 
@@ -393,12 +435,14 @@ destroy_contexts(struct mct_context_state *context_states,
 
 static bool
 init_contexts(Display *display,
-              struct mct_context_state *context_states)
+              struct mct_context_state *context_states,
+              bool flush_on_release)
 {
         int i;
 
         for (i = 0; i < N_WINDOWS; i++) {
-                context_states[i].window = mct_window_new(display, 640, 640);
+                context_states[i].window =
+                        mct_window_new(display, 640, 640, flush_on_release);
 
                 if (context_states[i].window == NULL)
                         goto error;
@@ -453,6 +497,32 @@ draw_contexts(struct mct_context_state *context_states)
         }
 }
 
+static void
+dump_release_behavior(void)
+{
+        GLint value;
+
+        if (epoxy_has_gl_extension("GL_KHR_context_flush_control")) {
+                glGetIntegerv(GL_CONTEXT_RELEASE_BEHAVIOR, &value);
+                printf("GL_CONTEXT_RELEASE_BEHAVIOR = 0x%04x ", value);
+                if (value == GL_NONE)
+                        printf("(GL_NONE)\n");
+                else if (value == GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH)
+                        printf("(GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH)\n");
+                else
+                        printf("(?)\n");
+        } else {
+                printf("GL_KHR_context_flush_control is unavailable\n");
+        }
+}
+
+static void
+usage(void)
+{
+        fprintf(stderr, "usage: multi-context-test [flush/none]\n");
+        exit(EXIT_FAILURE);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -460,7 +530,19 @@ main(int argc, char **argv)
         Display *display;
         int frame_count = 0;
         time_t last_time = 0, now;
+        bool flush_on_release = true;
         int i;
+
+        if (argc == 2) {
+                if (!strcmp(argv[1], "flush"))
+                        flush_on_release = true;
+                else if (!strcmp(argv[1], "none"))
+                        flush_on_release = false;
+                else
+                        usage();
+        } else if (argc != 1) {
+                usage();
+        }
 
         display = XOpenDisplay(NULL);
 
@@ -469,9 +551,12 @@ main(int argc, char **argv)
                 return EXIT_FAILURE;
         }
 
-        if (init_contexts(display, context_states)) {
-                for (i = 0; i < N_WINDOWS; i++)
+        if (init_contexts(display, context_states, flush_on_release)) {
+                for (i = 0; i < N_WINDOWS; i++) {
                         XMapWindow(display, context_states[i].window->win);
+                        mct_window_make_current(context_states[i].window);
+                        dump_release_behavior();
+                }
 
                 while (true) {
                         draw_contexts(context_states);
