@@ -2,6 +2,8 @@
 /Makefile.in
 /aclocal.m4
 /autom4te.cache
+/build/config.guess
+/build/config.sub
 /build/Makefile
 /build/Makefile.in
 /build/depcomp

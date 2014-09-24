@@ -20,6 +20,8 @@ AM_CPPFLAGS = \
 
 multi_context_test_SOURCES = \
 	multi-context-test.c \
+	shader-data.c \
+	shader-data.h \
 	$(NULL)
 
 multi_context_test_LDADD = \
@@ -27,6 +29,7 @@ multi_context_test_LDADD = \
 	$(GL_LIBS) \
 	$(X11_LIBS) \
 	$(MULTI_CONTEXT_TEST_EXTRA_LIBS) \
+	$(LIBM) \
 	$(NULL)
 
 EXTRA_DIST = \

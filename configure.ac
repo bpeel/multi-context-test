@@ -8,6 +8,9 @@ AC_GNU_SOURCE
 
 AC_PROG_CC
 
+LT_LIB_M
+AC_SUBST(LIBM)
+
 AM_INIT_AUTOMAKE([1.9 foreign no-dist-gzip dist-xz tar-ustar])
 
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
