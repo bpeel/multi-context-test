@@ -85,7 +85,6 @@ struct mct_context_state {
 
 struct mct_vertex {
         float x, y;
-        float distance;
 };
 
 static bool
@@ -282,49 +281,36 @@ make_grid(GLuint *buffer,
           int height)
 {
         struct mct_vertex *vertex;
-        float sw, sh;
+        float sh;
         float blx, bly;
-        float cx, cy;
-        float distance;
         int x, y;
+
+        /* Makes a grid of triangles where each line of quads is
+         * represented as a triangle strip. Each line is intended to
+         * drawn separately */
 
         glGenBuffers(1, buffer);
         glBindBuffer(GL_ARRAY_BUFFER, *buffer);
         glBufferData(GL_ARRAY_BUFFER,
-                     sizeof (struct mct_vertex) * width * height * 4,
+                     sizeof (struct mct_vertex) * (width * 2 + 2) * height,
                      NULL,
                      GL_STATIC_DRAW);
         vertex = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
 
-        sw = 2.0f / width;
         sh = 2.0f / height;
 
         for (y = 0; y < height; y++) {
-                for (x = 0; x < width; x++) {
+                for (x = 0; x <= width; x++) {
                         blx = x * 2.0f / width - 1.0f;
                         bly = y * 2.0f / height - 1.0f;
 
-                        cx = blx + sw / 2.0f;
-                        cy = bly + sh / 2.0f;
-                        distance = sqrtf(cx * cx + cy * cy);
-
                         vertex[0].x = blx;
-                        vertex[0].y = bly;
-                        vertex[0].distance = distance;
+                        vertex[0].y = bly + sh;
 
-                        vertex[1].x = blx + sw;
+                        vertex[1].x = blx;
                         vertex[1].y = bly;
-                        vertex[1].distance = distance;
 
-                        vertex[2].x = blx;
-                        vertex[2].y = bly + sh;
-                        vertex[2].distance = distance;
-
-                        vertex[3].x = blx + sw;
-                        vertex[3].y = bly + sh;
-                        vertex[3].distance = distance;
-
-                        vertex += 4;
+                        vertex += 2;
                 }
         }
 
@@ -339,13 +325,6 @@ make_grid(GLuint *buffer,
                               GL_FALSE, /* normalized */
                               sizeof (struct mct_vertex),
                               (void *) offsetof(struct mct_vertex, x));
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, /* index */
-                              1, /* size */
-                              GL_FLOAT,
-                              GL_FALSE, /* normalized */
-                              sizeof (struct mct_vertex),
-                              (void *) offsetof(struct mct_vertex, distance));
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
@@ -395,12 +374,11 @@ mct_draw_state_start(struct mct_draw_state *draw_state)
 }
 
 static void
-mct_draw_state_draw_rectangle(struct mct_draw_state *draw_state,
-                              int x, int y)
+mct_draw_state_draw_row(struct mct_draw_state *draw_state, int y)
 {
         glDrawArrays(GL_TRIANGLE_STRIP,
-                     (y * GRID_WIDTH + x) * 4,
-                     4 /* count */);
+                     y * (GRID_WIDTH * 2 + 2),
+                     GRID_WIDTH * 2 + 2);
 }
 
 static void
@@ -466,16 +444,16 @@ error:
 
 static void
 draw_context_window(struct mct_context_state *context_state,
-                    int x, int y)
+                    int y)
 {
         mct_window_make_current(context_state->window);
-        mct_draw_state_draw_rectangle(context_state->draw_state, x, y);
+        mct_draw_state_draw_row(context_state->draw_state, y);
 }
 
 static void
 draw_contexts(struct mct_context_state *context_states)
 {
-        int i, x, y;
+        int i, y;
 
         for (i = 0; i < N_WINDOWS; i++) {
                 mct_window_make_current(context_states[i].window);
@@ -483,10 +461,8 @@ draw_contexts(struct mct_context_state *context_states)
         }
 
         for (y = 0; y < GRID_HEIGHT; y++) {
-                for (x = 0; x < GRID_HEIGHT; x++) {
-                        for (i = 0; i < N_WINDOWS; i++) {
-                                draw_context_window(context_states + i, x, y);
-                        }
+                for (i = 0; i < N_WINDOWS; i++) {
+                        draw_context_window(context_states + i, y);
                 }
         }
 

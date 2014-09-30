@@ -28,7 +28,6 @@
 #version 330
 
 layout(location = 0) in vec2 pos;
-layout(location = 1) in float distance;
 
 uniform float band_pos;
 
@@ -39,6 +38,8 @@ out vec3 color;
 void
 main()
 {
+        float distance = length(pos);
+
         if (abs(band_pos - distance) < band_width)
                 color = vec3(1.0, 0.0, 0.0);
         else
