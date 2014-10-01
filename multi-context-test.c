@@ -411,6 +411,35 @@ destroy_contexts(struct mct_context_state *context_states,
         }
 }
 
+static void
+set_swap_interval(struct mct_window *window)
+{
+        PFNGLXSWAPINTERVALMESAPROC swap_interval_mesa;
+        PFNGLXSWAPINTERVALMESAPROC swap_interval_sgi;
+
+        if (check_glx_extension(window->display, "GLX_MESA_swap_control")) {
+                swap_interval_mesa =
+                        (void *) glXGetProcAddress((const GLubyte *)
+                                                   "glXSwapIntervalMESA");
+                if (swap_interval_mesa(0) == 0)
+                        return;
+        }
+
+        /* Try with the SGI extension. Technically this shouldn't work
+         * because the spec disallows swap interval 0 */
+        if (check_glx_extension(window->display, "GLX_SGI_swap_control")) {
+                swap_interval_sgi =
+                        (void *) glXGetProcAddress((const GLubyte *)
+                                                   "glXSwapIntervalSGI");
+                if (swap_interval_sgi(0) == 0)
+                        return;
+        }
+
+        fprintf(stderr,
+                "note: failed to set swap interval to 0 with either "
+                "GLX_MESA_swap_control or GLX_SGI_swap_control\n");
+}
+
 static bool
 init_contexts(Display *display,
               struct mct_context_state *context_states,
@@ -426,6 +455,8 @@ init_contexts(Display *display,
                         goto error;
 
                 mct_window_make_current(context_states[i].window);
+
+                set_swap_interval(context_states[i].window);
 
                 context_states[i].draw_state = mct_draw_state_new();
 
