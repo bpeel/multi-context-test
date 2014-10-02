@@ -14,6 +14,7 @@ bin_PROGRAMS = \
 AM_CPPFLAGS = \
 	$(EPOXY_CFLAGS) \
 	$(GL_CFLAGS) \
+	$(EGL_CFLAGS) \
 	$(X11_CFLAGS) \
 	$(MULTI_CONTEXT_TEST_EXTRA_CFLAGS) \
 	$(NULL)
@@ -27,6 +28,7 @@ multi_context_test_SOURCES = \
 multi_context_test_LDADD = \
 	$(EPOXY_LIBS) \
 	$(GL_LIBS) \
+	$(EGL_LIBS) \
 	$(X11_LIBS) \
 	$(MULTI_CONTEXT_TEST_EXTRA_LIBS) \
 	$(LIBM) \

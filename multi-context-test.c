@@ -30,7 +30,8 @@
 #include <epoxy/gl.h>
 #include <stdbool.h>
 #include <GL/gl.h>
-#include <GL/glx.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,21 +53,26 @@
 #define GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH 0x82FC
 #endif
 
-#ifndef GLX_CONTEXT_RELEASE_BEHAVIOR_ARB
-#define GLX_CONTEXT_RELEASE_BEHAVIOR_ARB  0x2097
+#ifndef EGL_CONTEXT_RELEASE_BEHAVIOR_KHR
+#define EGL_CONTEXT_RELEASE_BEHAVIOR_KHR  0x2097
 #endif
-#ifndef GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB
-#define GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB 0
+#ifndef EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR
+#define EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR 0
 #endif
-#ifndef GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB
-#define GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB 0x2098
+#ifndef EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR
+#define EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR 0x2098
 #endif
 
+struct mct_display {
+        Display *x;
+        EGLDisplay egl;
+};
+
 struct mct_window {
-        Display *display;
+        struct mct_display *display;
         Window win;
-        GLXContext context;
-        GLXWindow glx_window;
+        EGLContext context;
+        EGLSurface surface;
 };
 
 struct mct_draw_state {
@@ -88,11 +94,11 @@ struct mct_vertex {
 };
 
 static bool
-check_glx_extension(Display *display, const char *ext_name)
+check_egl_extension(EGLDisplay egl_display, const char *ext_name)
 {
         int ext_len = strlen(ext_name);
         const char *extensions =
-                glXQueryExtensionsString(display, DefaultScreen(display));
+                eglQueryString(egl_display, EGL_EXTENSIONS);
         const char *extensions_end;
 
         extensions_end = extensions + strlen(extensions);
@@ -113,154 +119,171 @@ check_glx_extension(Display *display, const char *ext_name)
         return false;
 }
 
-static GLXFBConfig
-choose_fb_config(Display *display)
+static EGLConfig
+choose_egl_config(EGLDisplay display)
 {
-        GLXFBConfig *configs;
-        int n_configs;
-        GLXFBConfig ret;
+        EGLint config_count = 0;
+        EGLConfig config;
+        EGLBoolean status;
         static const int attrib_list[] = {
-                GLX_DOUBLEBUFFER, True,
-                0
+                EGL_NONE
         };
 
-        configs = glXChooseFBConfig(display, DefaultScreen(display),
-                                    attrib_list, &n_configs);
+        status = eglChooseConfig(display,
+                                 attrib_list,
+                                 &config, 1,
+                                 &config_count);
 
-        if (configs == NULL) {
-                ret = NULL;
-        } else {
-                if (n_configs < 1)
-                        ret = NULL;
-                else
-                        ret = configs[0];
-
-                XFree(configs);
+        if (status != EGL_TRUE || config_count == 0) {
+                fprintf(stderr, "Unable to find a usable EGL configuration\n");
+                return NULL;
         }
 
-        return ret;
+        return config;
 }
 
 static void
 mct_window_make_current(struct mct_window *window)
 {
-        glXMakeCurrent(window->display, window->glx_window, window->context);
+        eglMakeCurrent(window->display->egl,
+                       window->surface,
+                       window->surface,
+                       window->context);
 }
 
 static void
 mct_window_swap(struct mct_window *window)
 {
         mct_window_make_current(window);
-        glXSwapBuffers(window->display, window->glx_window);
+        eglSwapBuffers(window->display->egl, window->surface);
 }
 
 static struct mct_window *
-mct_window_new(Display *display,
+mct_window_new(struct mct_display *display,
                int width, int height,
                bool flush_on_release)
 {
         int context_attribs[] = {
-                GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-                GLX_CONTEXT_MINOR_VERSION_ARB, 3,
-                GLX_CONTEXT_PROFILE_MASK_ARB,
-                GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
-                GLX_CONTEXT_FLAGS_ARB,
-                GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
-                GLX_CONTEXT_RELEASE_BEHAVIOR_ARB,
-                GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB,
-                None
+                EGL_CONTEXT_MAJOR_VERSION_KHR, 3,
+                EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+                EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
+                EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
+                EGL_CONTEXT_FLAGS_KHR,
+                EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR,
+                EGL_CONTEXT_RELEASE_BEHAVIOR_KHR,
+                EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR,
+                EGL_NONE
         };
-        GLXFBConfig fb_config;
-        GLXContext ctx;
+        EGLint visualid;
+        EGLConfig egl_config;
+        EGLContext ctx;
         int scrnum = 0;
         XSetWindowAttributes attr;
         unsigned long mask;
         Window root;
-        XVisualInfo *visinfo;
+        XVisualInfo *visinfo, visinfo_template;
+        int visinfos_count;
         struct mct_window *window;
-        PFNGLXCREATECONTEXTATTRIBSARBPROC create_context_attribs;
         bool has_flush_ext;
 
-        if (!check_glx_extension(display, "GLX_ARB_create_context")) {
+        if (!check_egl_extension(display->egl, "EGL_KHR_create_context")) {
                 fprintf(stderr,
-                        "GLX_ARB_create_context is not supported\n");
+                        "EGL_KHR_create_context is not supported\n");
                 return NULL;
         }
 
-        has_flush_ext = check_glx_extension(display,
-                                            "GLX_ARB_context_flush_control");
+        has_flush_ext = check_egl_extension(display->egl,
+                                            "EGL_KHR_context_flush_control");
 
         if (flush_on_release) {
                 if (has_flush_ext) {
                         context_attribs[sizeof context_attribs /
                                         sizeof context_attribs[0] - 2] =
-                                GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB;
+                                EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR;
                 } else {
                         context_attribs[sizeof context_attribs /
-                                        sizeof context_attribs[0] - 3] = None;
+                                        sizeof context_attribs[0] - 3] =
+                                EGL_NONE;
                 }
         } else if (!has_flush_ext) {
                 fprintf(stderr,
                         "Requested disabling flush on release but "
-                        "GLX_ARB_context_flush_control is not "
+                        "EGL_KHR_context_flush_control is not "
                         "available\n");
                 return NULL;
         }
 
-        fb_config = choose_fb_config(display);
-
-        if (fb_config == NULL) {
+        if (!eglBindAPI(EGL_OPENGL_API)) {
                 fprintf(stderr,
-                        "No suitable GLXFBConfig found\n");
+                        "eglBindAPI failed\n");
                 return NULL;
         }
 
-        visinfo = glXGetVisualFromFBConfig(display, fb_config);
+        egl_config = choose_egl_config(display->egl);
+
+        if (egl_config == NULL)
+                return NULL;
+
+        eglGetConfigAttrib(display->egl, egl_config,
+                           EGL_NATIVE_VISUAL_ID, &visualid);
+
+        if (visualid == 0) {
+                fprintf(stderr,
+                         "EGL config does not have an associated visual\n");
+                return NULL;
+        }
+
+        visinfo_template.visualid = visualid;
+
+        visinfo = XGetVisualInfo(display->x,
+                                 VisualIDMask, &visinfo_template,
+                                 &visinfos_count);
 
         if (visinfo == NULL) {
-                fprintf(stderr,
-                         "FB config does not have an associated visual\n");
+                fprintf(stderr, "XGetVisualInfo failed\n");
                 return NULL;
         }
 
-        create_context_attribs =
-                (void *) glXGetProcAddress((const GLubyte *)
-                                           "glXCreateContextAttribsARB");
-        ctx = create_context_attribs(display,
-                                     fb_config,
-                                     NULL, /* share_context */
-                                     True, /* direct */
-                                     context_attribs);
+        ctx = eglCreateContext(display->egl,
+                               egl_config,
+                               EGL_NO_CONTEXT,
+                               context_attribs);
 
-        if (ctx == NULL) {
+        if (ctx == EGL_NO_CONTEXT) {
                 fprintf(stderr,
-                        "Error: glXCreateContextAttribs failed\n");
+                        "Error: eglCreateContext failed\n");
+                XFree(visinfo);
                 return NULL;
         }
 
         window = malloc(sizeof *window);
 
-        root = RootWindow(display, scrnum);
+        root = RootWindow(display->x, scrnum);
 
         /* window attributes */
         attr.background_pixel = 0;
         attr.border_pixel = 0;
         attr.colormap =
-            XCreateColormap(display, root, visinfo->visual, AllocNone);
+            XCreateColormap(display->x, root, visinfo->visual, AllocNone);
         attr.event_mask =
             StructureNotifyMask | ExposureMask | PointerMotionMask |
             KeyPressMask;
         mask = CWBorderPixel | CWColormap | CWEventMask;
 
-        window->win = XCreateWindow(display, root, 0, 0, width, height,
+        window->win = XCreateWindow(display->x, root, 0, 0, width, height,
                                     0, visinfo->depth, InputOutput,
                                     visinfo->visual, mask, &attr);
 
-        window->glx_window = glXCreateWindow(display, fb_config,
-                                             window->win, NULL);
+        window->surface =
+                eglCreateWindowSurface(display->egl,
+                                       egl_config,
+                                       (EGLNativeWindowType) window->win,
+                                       NULL);
 
         window->context = ctx;
         window->display = display;
+
+        XFree(visinfo);
 
         return window;
 }
@@ -268,9 +291,9 @@ mct_window_new(Display *display,
 static void
 mct_window_free(struct mct_window *window)
 {
-        glXDestroyContext(window->display, window->context);
-        glXDestroyWindow(window->display, window->glx_window);
-        XDestroyWindow(window->display, window->win);
+        eglDestroyContext(window->display->egl, window->context);
+        eglDestroySurface(window->display->egl, window->surface);
+        XDestroyWindow(window->display->x, window->win);
         free(window);
 }
 
@@ -414,34 +437,16 @@ destroy_contexts(struct mct_context_state *context_states,
 static void
 set_swap_interval(struct mct_window *window)
 {
-        PFNGLXSWAPINTERVALMESAPROC swap_interval_mesa;
-        PFNGLXSWAPINTERVALMESAPROC swap_interval_sgi;
+        EGLBoolean status;
 
-        if (check_glx_extension(window->display, "GLX_MESA_swap_control")) {
-                swap_interval_mesa =
-                        (void *) glXGetProcAddress((const GLubyte *)
-                                                   "glXSwapIntervalMESA");
-                if (swap_interval_mesa(0) == 0)
-                        return;
-        }
+        status = eglSwapInterval(window->display->egl, 0);
 
-        /* Try with the SGI extension. Technically this shouldn't work
-         * because the spec disallows swap interval 0 */
-        if (check_glx_extension(window->display, "GLX_SGI_swap_control")) {
-                swap_interval_sgi =
-                        (void *) glXGetProcAddress((const GLubyte *)
-                                                   "glXSwapIntervalSGI");
-                if (swap_interval_sgi(0) == 0)
-                        return;
-        }
-
-        fprintf(stderr,
-                "note: failed to set swap interval to 0 with either "
-                "GLX_MESA_swap_control or GLX_SGI_swap_control\n");
+        if (!status)
+                fprintf(stderr, "note: failed to set swap interval to 0\n");
 }
 
 static bool
-init_contexts(Display *display,
+init_contexts(struct mct_display *display,
               struct mct_context_state *context_states,
               bool flush_on_release)
 {
@@ -530,11 +535,57 @@ usage(void)
         exit(EXIT_FAILURE);
 }
 
+static struct mct_display *
+open_display(void)
+{
+        Display *x;
+        EGLDisplay egl;
+        struct mct_display *display;
+        EGLBoolean status;
+        EGLint egl_major, egl_minor;
+
+        x = XOpenDisplay(NULL);
+
+        if (x == NULL) {
+                fprintf(stderr, "XOpenDisplay failed\n");
+                return NULL;
+        }
+
+        egl = eglGetDisplay((EGLNativeDisplayType) x);
+
+        if (egl == EGL_NO_DISPLAY) {
+                XCloseDisplay(x);
+                fprintf(stderr, "eglGetDisplay failed\n");
+                return NULL;
+        }
+
+        status = eglInitialize(egl, &egl_major, &egl_minor);
+
+        if (!status) {
+                XCloseDisplay(x);
+                fprintf(stderr, "eglInitialize failed\n");
+                return NULL;
+        }
+
+        display = malloc(sizeof *display);
+        display->x = x;
+        display->egl = egl;
+
+        return display;
+}
+
+static void
+close_display(struct mct_display *display)
+{
+        eglTerminate(display->egl);
+        XCloseDisplay(display->x);
+}
+
 int
 main(int argc, char **argv)
 {
         struct mct_context_state context_states[N_WINDOWS];
-        Display *display;
+        struct mct_display *display;
         int frame_count = 0;
         time_t last_time = 0, now;
         bool flush_on_release = true;
@@ -551,16 +602,14 @@ main(int argc, char **argv)
                 usage();
         }
 
-        display = XOpenDisplay(NULL);
+        display = open_display();
 
-        if (display == NULL) {
-                fprintf(stderr, "XOpenDisplay failed\n");
+        if (display == NULL)
                 return EXIT_FAILURE;
-        }
 
         if (init_contexts(display, context_states, flush_on_release)) {
                 for (i = 0; i < N_WINDOWS; i++) {
-                        XMapWindow(display, context_states[i].window->win);
+                        XMapWindow(display->x, context_states[i].window->win);
                         mct_window_make_current(context_states[i].window);
                         dump_release_behavior();
                 }
@@ -580,7 +629,7 @@ main(int argc, char **argv)
                 destroy_contexts(context_states, N_WINDOWS);
         }
 
-        XCloseDisplay(display);
+        close_display(display);
 
         return EXIT_SUCCESS;
 }
